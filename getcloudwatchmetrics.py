@@ -28,8 +28,14 @@ import codecs
 account = ""
 instanceNum = {}
 
-def getInstances(region):
-    ec2 = boto3.resource('ec2',region_name=region)
+def getInstances(region, sts_credentials):
+    ec2 = boto3.resource(
+        'ec2',
+        region_name=region,
+        aws_access_key_id=sts_credentials['Credentials']['AccessKeyId'],
+        aws_secret_access_key=sts_credentials['Credentials']['SecretAccessKey'],
+        aws_session_token=sts_credentials['Credentials']['SessionToken']
+        )
     json_result = []
     runningInstances = []
     #countInstance = []
@@ -45,12 +51,13 @@ def getInstances(region):
                 if instance["State"]["Name"] == "running":
                     instance["OwnerAccountId"] = account
                     runningInstances.append(instance)
-                    #countInstance.append(instance["InstanceId"])
+                    
 
     return runningInstances
 
-def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, outputName, instance):
+def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, outputName, sts_credentials, instance):
     global instanceNum
+
     instanceNum[instance["InstanceId"]] = 1
     res = ""
     output = {}
@@ -71,8 +78,13 @@ def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, ou
         numRetries = 0
         gettingMetrics = True
         while gettingMetrics:
-        	try:
-                    session = boto3.session.Session(region_name=instance["Placement"]["AvailabilityZone"][:-1])
+        	try: # using temp credentials received from STS for target account
+                    session = boto3.session.Session(
+                        region_name=instance["Placement"]["AvailabilityZone"][:-1],
+                        aws_access_key_id=sts_credentials['Credentials']['AccessKeyId'],
+                        aws_secret_access_key=sts_credentials['Credentials']['SecretAccessKey'],
+                        aws_session_token=sts_credentials['Credentials']['SessionToken']
+                        )
                     cloudwatch = session.resource('cloudwatch')
                     json_result = cloudwatch.meta.client.get_metric_statistics(Dimensions=args['dimensions'],
                                                                        StartTime=datetime.datetime.fromtimestamp(args['startTime']/1e3).strftime("%Y-%m-%d %H:%M:%S"),
@@ -102,7 +114,7 @@ def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, ou
                     readableInstanceLaunchTime = instance["LaunchTime"]
                     tagString = ""
                     ebsString = ""
-
+                    
                     if instance.get('Tags',"None") <> "None":
                         for tag in instance["Tags"]:
                             tagString += re.sub('[^a-zA-Z0-9-_ *.]', '', tag["Key"].replace(",", " ")) + ":" + re.sub('[^a-zA-Z0-9-_ *.]', '', tag["Value"].replace(",", " ")) + " | "
@@ -115,7 +127,7 @@ def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, ou
                     output[str(datapoint['Timestamp'])] = {
                         "humanReadableTimestamp": readableTimeStamp,
                         "timestamp": datapoint['Timestamp'],
-                        "accountId": instance["OwnerAccountId"],
+                        "accountId": instance["NetworkInterfaces"][0]["OwnerId"],
                         "az": instance["Placement"]["AvailabilityZone"],
                         "instanceId": instance["InstanceId"],
                         "instanceType": instance["InstanceType"],
@@ -130,7 +142,7 @@ def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, ou
                 print(e)
 
     for row in output:
-       res += u"\"{0}\",\"{1}\",\"{2}\",\"{3}\",\"{4}\",\"{5}\",\"{6}\",\"{7}\",\"{8}\",\"{9}\",\"{10}\",\"{11}\",\"{12}\",\"{13}\",\"{14}\",\"{15}\"\n".format(\
+        res += u"\"{0}\",\"{1}\",\"{2}\",\"{3}\",\"{4}\",\"{5}\",\"{6}\",\"{7}\",\"{8}\",\"{9}\",\"{10}\",\"{11}\",\"{12}\",\"{13}\",\"{14}\",\"{15}\"\n".format(\
                                                                             output[row].setdefault("humanReadableTimestamp",""),\
                                                                             output[row].setdefault("timestamp",""),\
                                                                             output[row].setdefault("accountId",""),\
@@ -150,7 +162,7 @@ def getMetrics(intNow, startTime, endTime, period, statistics, unit, metrics, ou
     return res
 
 # Main
-def download_metrics(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p_endtime, p_output):
+def download_metrics(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p_endtime, p_output, sts_credentials):
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s')
 
@@ -198,8 +210,8 @@ def download_metrics(p_region, p_account, p_mode, p_statistics, p_period, p_star
         logging.error('Mode is not correct')
 
     p = multiprocessing.Pool(multiprocessing.cpu_count() - 1)
-    func = partial(getMetrics, intNow, startTime, endTime, period, statistics, unit, metrics, outputName)
-    response = p.map(func, getInstances(region[0]))
+    func = partial(getMetrics, intNow, startTime, endTime, period, statistics, unit, metrics, outputName, sts_credentials)
+    response = p.map(func, getInstances(region[0],sts_credentials))
     p.close()
     p.join()
 

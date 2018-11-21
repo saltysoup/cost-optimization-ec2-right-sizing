@@ -18,6 +18,7 @@
 #
 ######################################################################################################################
 
+import os
 import psycopg2
 import math
 import string, os, sys
@@ -41,33 +42,11 @@ else:
     logging.error("The platform %s " % (CURRENTOS) + " is not supported.")
     exit()
 
-#===============================================================================
-# cf.read("resize.conf")
-#
-# CW_REGION = cf.get("cwatch","region")
-# CW_ACCOUNT = cf.get("cwatch","account")
-# CW_MODE = cf.get("cwatch","mode")
-# CW_STATISTICS = cf.get("cwatch","statistics")
-# CW_PERIOD = cf.get("cwatch","period")
-# CW_STARTTIME = cf.get("cwatch","startTime")
-# CW_ENDTIME = cf.get("cwatch","endTime")
-# CW_OUTPUT = cf.get("cwatch","outputName")
-# CW_DATAFILE = cf.get("parameters","cw_datafile")
-#
-# ACCOUNT_ID = CW_ACCOUNT
-# REDSHIFT_IAM_ROLE = cf.get("parameters","redshift_iam_role")
-# S3_BUCKET = cf.get("parameters","s3_bucket_name")
-#
-# DB_HOST = cf.get("db", "db_host")
-# DB_PORT = cf.getint("db", "db_port")
-# DB_USER = cf.get("db", "db_user")
-# DB_PASS = cf.get("db", "db_pass")
-# DB_NAME = cf.get("db", "db_name")
-# IOSP_PER_SSD = int(cf.get("parameters","iops_per_ssd"))
-#===============================================================================
-
+# these values are replaced by user inputs during stack creation
 CW_REGION = "cfn_region"
 CW_ACCOUNT = "cfn_account"
+new_CW_ACCOUNT = list((CW_ACCOUNT.replace(" ", "")).split(",")) # cleaning input into a list
+CW_ROLE = "cfn_role"
 CW_MODE = "single"
 CW_STATISTICS = "Maximum"
 CW_PERIOD = "60"
@@ -76,7 +55,6 @@ CW_ENDTIME = "0"
 CW_OUTPUT = "result"
 CW_DATAFILE = "cfn_datafile"
 
-ACCOUNT_ID = CW_ACCOUNT
 REDSHIFT_IAM_ROLE = "redshift_iam_role"
 S3_BUCKET = "cfn_s3_bucket_name"
 
@@ -107,11 +85,6 @@ def upload_s3(bucketname, keyname, file_upload):
     s3.meta.client.upload_file(file_upload, bucketname, keyname)
 
 def copy_table(db_conn, tablename, bucketname, sourcefile, ignorerows, gzflag):
-    #ls_rolesession_name = REDSHIFT_IAM_ROLE[REDSHIFT_IAM_ROLE.index("/")+1:]
-    #client = boto3.client('sts')
-    #assumedRoleObject = client.assume_role(RoleArn=REDSHIFT_IAM_ROLE, RoleSessionName=ls_rolesession_name)
-    #credentials = assumedRoleObject['Credentials']
-    #credentials = client.get_session_token()['Credentials']
     session = boto3.Session()
     credentials = session.get_credentials()
     ls_aws_access_key_id=credentials.access_key
@@ -156,11 +129,7 @@ def download_ec2pricelist():
     try:
         ec2pricelist = urllib.URLopener()
         ec2pricelist.retrieve("https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/index.csv","index.csv")
-        #if CURRENTOS == "Linux":
-        #    ls_download_ec2pricelist = "wget https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/index.csv -q"
-        #elif CURRENTOS == "Windows":
-        #    ls_download_ec2pricelist = "curl https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/index.csv -o index.csv"
-        #os.system(ls_download_ec2pricelist)
+
     except Exception as inst:
         logging.error("Could not download the EC2 pricelist from https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/index.csv")
         exit()
@@ -292,14 +261,14 @@ def right_sizing(db_conn, pricelist_table, cw_tablename):
     ls_gen_list_sql += " max(to_number(trim(both ' ' from diskreadops),'9999999D99999999')/60+to_number(trim(both ' ' from diskwriteops),'9999999D99999999')/60) as maxiops, "
     ls_gen_list_sql += " max((to_number(trim(both ' ' from networkin),'9999999999999D99999999')/60/1024/1024)*8+(to_number(trim(both ' ' from networkout),'9999999999999D99999999')/60/1024/1024)*8) as maxnetwork "
     ls_gen_list_sql += " from " + cw_tablename
-    #ls_gen_list_sql += " where accountid like '%" + ACCOUNT_ID + "%' "
+
     ls_gen_list_sql += " where accountid not like '%accountId%' "
     ls_gen_list_sql += " group by instanceid, instancetags, instanceType, az) a, " + pricelist_table + " b "
     ls_gen_list_sql += " where a.instanceid in (select instanceid from (select instanceid,max(maxcpu) as topcpu from "
     ls_gen_list_sql += "(select instanceid, instancetags, instanceType, az, max(to_number(trim(both ' ' from CPUUtilization),'9999999D99999999')) as maxcpu, "
     ls_gen_list_sql += " max(to_number(trim(both ' ' from diskreadops),'9999999D99999999')/60+to_number(trim(both ' ' from diskwriteops),'9999999D99999999')/60) as maxiops, "
     ls_gen_list_sql += " max((to_number(trim(both ' ' from networkin),'9999999999999D99999999')/60/1024/1024)*8+(to_number(trim(both ' ' from networkout),'9999999999999D99999999')/60/1024/1024)*8) as maxnetwork "
-    #ls_gen_list_sql += " from " + cw_tablename + " where accountid like '%" + ACCOUNT_ID + "%' group by instanceid, instancetags, instanceType, az) group by instanceid) where topcpu<50) "
+    
     ls_gen_list_sql += " from " + cw_tablename + " where accountid not like '%accountId%' group by instanceid, instancetags, instanceType, az) group by instanceid) where topcpu<50) "
     ls_gen_list_sql += " and a.instancetype=b.instancetype "
     ls_gen_list_sql += " and upper(substring(a.az,1,2))||upper(substring(a.az,4,1))|| substring(substring(a.az, position('-' in a.az)+1),position('-' in substring(a.az, position('-' in a.az)+1))+1,1)=b.regionabbr "
@@ -371,7 +340,7 @@ def right_sizing(db_conn, pricelist_table, cw_tablename):
             elif ln_network_usage>300 and ln_network_usage<=1000:
                 ln_network_level_usage = 2
             else:
-        		ln_network_level_usage = 3
+                        ln_network_level_usage = 3
 
         ls_resizetype_sql = "select regionabbr, instancetype, priceperunit, storage, vcpu, "
         ls_resizetype_sql += " case when networkperformance='Low' then 1 when networkperformance='Moderate' then 2 when networkperformance='High' then 3 else 99 end as networkperformance, networkperformance as newnetwork, memory from " + pricelist_table
@@ -413,6 +382,15 @@ def dump_results(db_conn, sql_stat, csv_filename):
     csvfile.close()
     cur_csv.close()
 
+def get_assumeRoleCreds(roleArn, roleSessionName):
+    sts_client = boto3.client("sts")
+    response = sts_client.assume_role(
+        RoleArn=roleArn,
+        RoleSessionName=roleSessionName
+    )
+    return (response)
+
+
 # Main
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s')
@@ -420,13 +398,26 @@ if __name__ == "__main__":
     logging.info("Downloading the CloudWatch metrics")
     sys.path.append('callgcw.py')
     import callgcw
-    ls_cwfile = callgcw.call_gcw(CW_REGION, CW_ACCOUNT, CW_MODE, CW_STATISTICS, CW_PERIOD, CW_STARTTIME, CW_ENDTIME, CW_OUTPUT)
-    #ls_cwfile = "result.20160825.csv.gz"
-    logging.info("Finish to download the CloudWatch metrics to the file %s " % ls_cwfile)
 
-    logging.info("Uploading the CloudWatch files to S3 ")
-    upload_s3(S3_BUCKET, ls_cwfile, ls_cwfile)
-    logging.info("Finish to upload the CloudWatch files to S3 bucket %s " % (S3_BUCKET))
+
+    for a, account in enumerate(new_CW_ACCOUNT):    
+        # creating ARN string from user fed IAM Role Name (assumes names are same across all accounts as per pre-req)
+        roleARNString = "arn:aws:iam::{0}:role/{1}".format(account,CW_ROLE)
+        roleSessionName = "{}-{}".format(account,CW_ROLE)
+        logging.info("getting temp credentials for role {} in account {} with ARN {}".format(roleARNString,account,roleARNString))
+        sts_credentials = get_assumeRoleCreds(roleARNString,roleSessionName)
+        logging.info("Received credentials: {}".format(sts_credentials))
+        ls_cwfile = callgcw.call_gcw(CW_REGION, account, CW_MODE, CW_STATISTICS, CW_PERIOD, CW_STARTTIME, CW_ENDTIME, CW_OUTPUT, sts_credentials)
+        
+        logging.info("Finished to download the CloudWatch metrics for account {0} to the file {1} ".format(account,ls_cwfile))
+
+        # checking list to see if its the last account, then upload to s3
+        if a == (len(new_CW_ACCOUNT)-1):
+            os.system('gzip -f ' + ls_cwfile)
+            ls_cwfile += ".gz"
+            logging.info("Uploading the CloudWatch files to S3 ")
+            upload_s3(S3_BUCKET, ls_cwfile, ls_cwfile)
+            logging.info("Finish to upload the CloudWatch files to S3 bucket %s " % (S3_BUCKET))
 
     logging.info("Downloading the EC2 pricelist file and upload it to S3 bucket")
     ls_ec2pricelist_fileame = download_ec2pricelist()
@@ -436,6 +427,7 @@ if __name__ == "__main__":
     logging.info("Connected to the database")
 
     logging.info("Importing the CloudWatch files to Redshift table")
+
     ls_cw_tabname = import_cwdata(conn, ls_cwfile, 0, "Y")
     logging.info("Finish to import the CloudWatch files to the Redshift table: %s " % (ls_cw_tabname))
 
@@ -448,7 +440,7 @@ if __name__ == "__main__":
     logging.info("Finish the analysis and store the instances to the table %s " % (ls_temp_table))
 
     logging.info("Dumping the instances into the csv file")
-    #ls_csv_sql = "select * from " + ls_temp_table + " order by to_number(trim(both ' ' from costsavedpermonth),'9999999999D99999999')"
+
     ls_csv_sql = " select region, instanceid, instancetype, vcpu, memory, storage, networkperformance, priceperunit, "
     ls_csv_sql += " resizetype, newvcpu, newmemory, newstorage, newnetwork, resizeprice, costsavedpermonth, maxcpu, maxiops, maxnetwork, instancetags "
     ls_csv_sql += " from " + ls_temp_table + " order by to_number(trim(both ' ' from costsavedpermonth),'9999999999D99999999')"
@@ -459,13 +451,6 @@ if __name__ == "__main__":
     logging.info("Uploading the rightsizing results file to S3 bucket %s " % (S3_BUCKET))
     upload_s3(S3_BUCKET, ls_csvfile, ls_csvfile)
 
-    # @logging.info("Delete the temp table with EC2 pricelist %s " % (ls_pricelist_tabname))
-    #execute_dml_ddl(conn, "drop table "+ls_pricelist_tabname)
-    #logging.info("Delete the temp table with instances need to be resized %s " % (ls_temp_table))
-    #execute_dml_ddl(conn, "drop table "+ls_temp_table)
-    #if CURRENTOS == "Windows":
-    #    logging.info("Delete the temp table with CloudWatch data %s " % (ls_cw_tabname))
-    #    execute_dml_ddl(conn, "drop table "+ls_cw_tabname)
 
     logging.info("Analysis complete.")
     conn.close()

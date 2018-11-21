@@ -21,7 +21,7 @@ from argparse import ArgumentParser
 import codecs
 
 
-CW_REGION = "cfn_region"
+CW_REGION = "ap-southeast-2"
 
 CURRENTOS = platform.system()
 if CURRENTOS == "Linux":
@@ -35,13 +35,19 @@ else:
     exit()
 
 # Main
-def call_gcw(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p_endtime, p_output):
+def call_gcw(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p_endtime, p_output, sts_credentials):
     sys.path.append('getcloudwatchmetrics.py')
     import getcloudwatchmetrics
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s')
 
-    ec2 = boto3.client('ec2',region_name=CW_REGION)
+    ec2 = boto3.client(
+        'ec2',
+        region_name=CW_REGION,
+        aws_access_key_id=sts_credentials['Credentials']['AccessKeyId'],
+        aws_secret_access_key=sts_credentials['Credentials']['SecretAccessKey'],
+        aws_session_token=sts_credentials['Credentials']['SessionToken']
+        )
     awsregions = ec2.describe_regions()['Regions']
     print awsregions
     #region = [str(x) for x in p_region.split(' ')]
@@ -53,8 +59,12 @@ def call_gcw(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p
     endTime = int(p_endtime) * 60 * 60 * 1000
     outputName = p_output
 
+    
     ls_today = time.strftime('%Y-%m-%d',time.localtime(time.time()))
     ls_combined_csv = ls_today + "-before" + str(p_starttime) +"hour-with" + str(p_period) + "min.csv"
+    
+    logging.info("Writing CW data to file {}".format(ls_combined_csv)) # debug
+
     outfile = codecs.open(ls_combined_csv, 'a', encoding='utf-8')
     outfile.write(
         u"\"{0}\",\"{1}\",\"{2}\",\"{3}\",\"{4}\",\"{5}\",\"{6}\",\"{7}\",\"{8}\",\"{9}\",\"{10}\",\"{11}\",\"{12}\",\"{13}\",\"{14}\",\"{15}\"\n".format(
@@ -70,7 +80,7 @@ def call_gcw(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p
             ls_region_array = []
             ls_region_array.append(ls_single_region)
             ls_outputfile_name = outputName + "-in-" + ls_single_region + ".csv"
-            getcloudwatchmetrics.download_metrics(ls_region_array, account, mode, statistics, period, startTime, endTime, ls_outputfile_name)
+            getcloudwatchmetrics.download_metrics(ls_region_array, account, mode, statistics, period, startTime, endTime, ls_outputfile_name, sts_credentials)
 
             if CURRENTOS == "Linux":
                 os.system('cat ' + ls_outputfile_name + ' >> ' + ls_combined_csv)
@@ -79,5 +89,4 @@ def call_gcw(p_region, p_account, p_mode, p_statistics, p_period, p_starttime, p
                 os.system('type ' + ls_outputfile_name + ' >> ' + ls_combined_csv)
                 os.system('del ' + ls_outputfile_name)
 
-    os.system('gzip -f ' + ls_combined_csv)
-    return ls_combined_csv+".gz"
+    return ls_combined_csv # this file will be appended with cloudwatch data until the last aws account in list, where it will uploaded to S3
